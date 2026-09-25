@@ -9,6 +9,13 @@ on:
   pull_request:
     branches: [master, main]
   workflow_dispatch:
+    inputs:
+      include_ui_tests:
+        description: "Also run the slower, flakier UI test bundle"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
 
 concurrency:
   group: test-ios-${{ github.ref }}
@@ -70,6 +77,19 @@ jobs:
           set -euo pipefail
           # Simulator builds use an ad-hoc signature ("-"). Turning signing off
           # entirely stops the test host from launching and hangs the run.
+          #
+          # -only-testing limits this to the unit-test bundle. The scheme also
+          # lists HermesMobileUITests, which actually boots and drives the app
+          # on the simulator -- far slower and flakier. UI tests are opted into
+          # separately via a manual run.
+          ONLY_TESTING=(-only-testing:HermesMobileTests)
+          if [ "${{ github.event.inputs.include_ui_tests }}" = "true" ]; then
+            ONLY_TESTING=()
+          fi
+
+          # macOS ships bash 3.2, where "${arr[@]}" on an empty array trips
+          # `set -u`. Use the ${arr[@]+"${arr[@]}"} form so an empty array
+          # expands to nothing instead of erroring.
           xcodebuild test \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
@@ -77,6 +97,7 @@ jobs:
             -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
             -skipMacroValidation \
             -skipPackagePluginValidation \
+            ${ONLY_TESTING[@]+"${ONLY_TESTING[@]}"} \
             CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=YES \
