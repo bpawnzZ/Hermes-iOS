@@ -28,10 +28,27 @@ struct HermesMobileTests {
 
     @Test func permissionTypeHasDistinctColorsAndIcons() async throws {
         let types = PermissionType.allCases
-        #expect(types.count == 6)
 
+        // Assert the real invariant rather than a hardcoded count: every
+        // permission must be visually distinguishable. Using the case count
+        // as the expected value keeps this from going stale when a permission
+        // is added, while still catching a duplicated icon or colour.
         let icons = Set(types.map(\.displayIcon))
-        #expect(icons.count == 6, "Each permission type should have a unique icon")
+        #expect(
+            icons.count == types.count,
+            "Each permission type should have a unique icon (got \(icons.count) unique icons for \(types.count) types)"
+        )
+
+        let colors = Set(types.map { String(describing: $0.displayColor) })
+        #expect(
+            colors.count == types.count,
+            "Each permission type should have a unique colour (got \(colors.count) unique colours for \(types.count) types)"
+        )
+
+        for type in types {
+            #expect(!type.displayLabel.isEmpty)
+            #expect(!type.explanation.isEmpty)
+        }
     }
 
     @Test func inboxItemTypeVisualIdentityIsComplete() async throws {
