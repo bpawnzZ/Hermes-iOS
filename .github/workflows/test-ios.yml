@@ -23,7 +23,8 @@ jobs:
   test:
     name: Unit tests (simulator)
     runs-on: macos-26
-    timeout-minutes: 60
+    # Simulator runs are slow; bound them so a stall cannot burn an hour.
+    timeout-minutes: 30
     permissions:
       contents: read
 
@@ -34,39 +35,54 @@ jobs:
       - name: Select toolchain
         run: |
           set -euo pipefail
+          if [ ! -d "$DEVELOPER_DIR" ]; then
+            echo "::error::Xcode not found at $DEVELOPER_DIR"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
           xcodebuild -version
 
-      - name: Pick an available iOS simulator
+      - name: Pick and boot an available iOS simulator
         id: sim
         run: |
           set -euo pipefail
-          # Prefer the newest iPhone runtime actually installed on the runner.
-          DEVICE=$(xcrun simctl list devices available \
-            | grep -E '^\s+iPhone' \
-            | head -1 \
-            | sed -E 's/^[[:space:]]*//; s/ \(.*//')
-          if [ -z "$DEVICE" ]; then
-            echo "::error::No iPhone simulator available"
+          # Select a concrete UDID: name-based destinations are ambiguous when
+          # several runtimes are installed, which can stall the test host.
+          PICKED=$(python3 .github/scripts/pick-simulator.py) || {
+            echo "::error::No available iPhone simulator"
             xcrun simctl list devices available
             exit 1
-          fi
-          echo "Using simulator: $DEVICE"
-          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          }
+
+          SIM_NAME=$(echo "$PICKED" | cut -d'|' -f1)
+          SIM_UDID=$(echo "$PICKED" | cut -d'|' -f2)
+          SIM_RUNTIME=$(echo "$PICKED" | cut -d'|' -f3)
+          echo "Selected: $SIM_NAME ($SIM_RUNTIME) $SIM_UDID"
+          echo "udid=$SIM_UDID" >> "$GITHUB_OUTPUT"
+          echo "name=$SIM_NAME" >> "$GITHUB_OUTPUT"
+
+          # Boot up front so the test run does not pay cold-boot cost.
+          xcrun simctl boot "$SIM_UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$SIM_UDID" -b
 
       - name: Run unit tests
         run: |
           set -euo pipefail
+          # Simulator builds use an ad-hoc signature ("-"). Turning signing off
+          # entirely stops the test host from launching and hangs the run.
           xcodebuild test \
             -project "$PROJECT" \
             -scheme "$SCHEME" \
-            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
             -skipMacroValidation \
-            CODE_SIGNING_ALLOWED=NO \
+            -skipPackagePluginValidation \
+            CODE_SIGN_IDENTITY="-" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_ALLOWED=YES \
+            CODE_SIGN_ENTITLEMENTS="" \
             DEVELOPMENT_TEAM="" \
-            2>&1 | tee "$RUNNER_TEMP/test.log" | tail -100
+            2>&1 | tee "$RUNNER_TEMP/test.log" | tail -120
 
       - name: Upload test results
         if: always()
