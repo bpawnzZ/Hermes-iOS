@@ -103,13 +103,13 @@ jobs:
           cp -R "$APP_PATH" "$STAGE/Payload/"
           rm -rf "$STAGE/Payload/$APP_NAME.app/_CodeSignature"
           rm -f  "$STAGE/Payload/$APP_NAME.app/embedded.mobileprovision"
-          ( cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa" Payload )
+          ( cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}.ipa" Payload )
 
           ( cd "$(dirname "$APP_PATH")" \
-            && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned-app.zip" "$APP_NAME.app" )
+            && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}-app.zip" "$APP_NAME.app" )
 
-          shasum -a 256 "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa" \
-            | tee "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa.sha256"
+          shasum -a 256 "$GITHUB_WORKSPACE/${APP_NAME}-${V}.ipa" \
+            | tee "$GITHUB_WORKSPACE/${APP_NAME}-${V}.ipa.sha256"
           ls -lh "$GITHUB_WORKSPACE/"*.ipa "$GITHUB_WORKSPACE/"*.zip
 
       - name: Package dSYMs
@@ -156,9 +156,9 @@ jobs:
           } > "$RUNNER_TEMP/notes.md"
 
           ASSETS=(
-            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa"
-            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned-app.zip"
-            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa.sha256"
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}.ipa"
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-app.zip"
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}.ipa.sha256"
           )
           [ -f "$GITHUB_WORKSPACE/${APP_NAME}-${V}-dSYMs.zip" ] \
             && ASSETS+=("$GITHUB_WORKSPACE/${APP_NAME}-${V}-dSYMs.zip")
