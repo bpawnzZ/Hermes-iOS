@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Select and verify toolchain
         run: |
@@ -162,28 +162,52 @@ jobs:
           ls -lh "$GITHUB_WORKSPACE/$APP_NAME-unsigned-app.zip"
 
       - name: Collect dSYMs
+        # Never fail the job here: the IPA and .app are the deliverables.
+        continue-on-error: true
         if: always()
         run: |
-          set -euo pipefail
+          set -uo pipefail
           DERIVED="$RUNNER_TEMP/DerivedData"
-          FOUND=$(find "$DERIVED/Build/Products" -name '*.dSYM' -maxdepth 3 2>/dev/null || true)
-          if [ -n "$FOUND" ]; then
-            echo "$FOUND" | xargs -I{} echo "Found dSYM: {}"
-            echo "$FOUND" | tr '\n' '\0' | xargs -0 zip -qry "$GITHUB_WORKSPACE/$APP_NAME-dSYMs.zip" -j
-            ls -lh "$GITHUB_WORKSPACE/$APP_NAME-dSYMs.zip"
-          else
+          PRODUCTS="$DERIVED/Build/Products"
+          ZIP_PATH="$GITHUB_WORKSPACE/$APP_NAME-dSYMs.zip"
+
+          # Two dSYM bundles are produced (app + widget extension), each with
+          # identical internal paths (Contents/Resources/DWARF/...). Archive
+          # them from a common parent WITHOUT flattening so every bundle keeps
+          # its own directory structure and no member names collide.
+          cd "$PRODUCTS"
+          FOUND=$(find . -maxdepth 2 -name '*.dSYM' -type d | sed 's|^\./||' | sort)
+
+          if [ -z "$FOUND" ]; then
             echo "No dSYMs produced (expected for Debug builds without debug info splitting)."
+            exit 0
+          fi
+
+          echo "dSYM bundles found:"
+          echo "$FOUND"
+          rm -f "$ZIP_PATH"
+          echo "$FOUND" | while IFS= read -r d; do
+            echo "Archiving: $d"
+            zip -qry "$ZIP_PATH" "$d"
+          done
+
+          if [ -f "$ZIP_PATH" ]; then
+            ls -lh "$ZIP_PATH"
+            echo "Contents:"
+            unzip -l "$ZIP_PATH" | head -20
+          else
+            echo "::warning::dSYM zip was not created."
           fi
 
       - name: Upload IPA
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ env.APP_NAME }}-unsigned-ipa
           path: ${{ env.APP_NAME }}-unsigned.ipa
           if-no-files-found: error
 
       - name: Upload .app bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ env.APP_NAME }}-app-bundle
           path: ${{ env.APP_NAME }}-unsigned-app.zip
@@ -191,7 +215,7 @@ jobs:
 
       - name: Upload dSYMs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ env.APP_NAME }}-dSYMs
           path: ${{ env.APP_NAME }}-dSYMs.zip
