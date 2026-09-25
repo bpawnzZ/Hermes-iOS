@@ -1,0 +1,85 @@
+name: Test iOS
+
+# Runs the unit test suite on a simulator. Kept separate from the build
+# workflow so a flaky simulator run never blocks IPA production.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: test-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+  PROJECT: HermesMobile.xcodeproj
+  SCHEME: HermesMobile
+
+jobs:
+  test:
+    name: Unit tests (simulator)
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+
+      - name: Pick an available iOS simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          # Prefer the newest iPhone runtime actually installed on the runner.
+          DEVICE=$(xcrun simctl list devices available \
+            | grep -E '^\s+iPhone' \
+            | head -1 \
+            | sed -E 's/^[[:space:]]*//; s/ \(.*//')
+          if [ -z "$DEVICE" ]; then
+            echo "::error::No iPhone simulator available"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Using simulator: $DEVICE"
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.device }}" \
+            -resultBundlePath "$RUNNER_TEMP/TestResults.xcresult" \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            2>&1 | tee "$RUNNER_TEMP/test.log" | tail -100
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: ${{ runner.temp }}/TestResults.xcresult
+          if-no-files-found: ignore
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-log
+          path: ${{ runner.temp }}/test.log
+          if-no-files-found: ignore

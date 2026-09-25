@@ -16,6 +16,9 @@ xcuserdata/
 # Build
 build/
 .build/
+*.ipa
+*Unsigned-app.zip
+*.dSYM.zip
 
 # Dependencies
 Pods/
