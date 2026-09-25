@@ -1,0 +1,172 @@
+name: Release iOS IPA
+
+# Publishes the unsigned .ipa, .app bundle and dSYMs to a GitHub Release.
+# Workflow artifacts expire; release assets do not - so this is the durable
+# way to grab a build for SideStore/AltStore re-signing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0). Leave blank to auto-generate."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-ios-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+  APP_NAME: HermesMobile
+  SCHEME: HermesMobile
+  PROJECT: HermesMobile.xcodeproj
+
+jobs:
+  release:
+    name: Build and publish unsigned IPA
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Select toolchain
+        run: |
+          set -euo pipefail
+          if [ ! -d "$DEVELOPER_DIR" ]; then
+            echo "::error::Xcode 26.3 not found at $DEVELOPER_DIR"
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          xcodebuild -version
+
+      - name: Resolve the release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.tag || '' }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="build-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing as: $TAG"
+
+      - name: Resolve Swift Package dependencies
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME"
+
+      - name: Build app (unsigned, Release)
+        id: build
+        run: |
+          set -euo pipefail
+          DERIVED="$RUNNER_TEMP/DerivedData"
+          mkdir -p "$DERIVED"
+          xcodebuild build \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$DERIVED" \
+            -skipMacroValidation \
+            -quiet \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO
+
+          APP_PATH="$DERIVED/Build/Products/Release-iphoneos/$APP_NAME.app"
+          [ -d "$APP_PATH" ] || { echo "::error::no .app at $APP_PATH"; exit 1; }
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+          echo "derived=$DERIVED" >> "$GITHUB_OUTPUT"
+
+      - name: Package IPA and .app
+        run: |
+          set -euo pipefail
+          APP_PATH="${{ steps.build.outputs.app_path }}"
+          V="${{ steps.tag.outputs.tag }}"
+
+          STAGE="$RUNNER_TEMP/ipa"
+          rm -rf "$STAGE" && mkdir -p "$STAGE/Payload"
+          cp -R "$APP_PATH" "$STAGE/Payload/"
+          rm -rf "$STAGE/Payload/$APP_NAME.app/_CodeSignature"
+          rm -f  "$STAGE/Payload/$APP_NAME.app/embedded.mobileprovision"
+          ( cd "$STAGE" && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa" Payload )
+
+          ( cd "$(dirname "$APP_PATH")" \
+            && zip -qry "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned-app.zip" "$APP_NAME.app" )
+
+          shasum -a 256 "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa" \
+            | tee "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa.sha256"
+          ls -lh "$GITHUB_WORKSPACE/"*.ipa "$GITHUB_WORKSPACE/"*.zip
+
+      - name: Package dSYMs
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          V="${{ steps.tag.outputs.tag }}"
+          cd "${{ steps.build.outputs.derived }}/Build/Products"
+          FOUND=$(find . -maxdepth 2 -name '*.dSYM' -type d | sed 's|^\./||' | sort)
+          if [ -z "$FOUND" ]; then
+            echo "No dSYMs found."
+            exit 0
+          fi
+          ZIP="$GITHUB_WORKSPACE/${APP_NAME}-${V}-dSYMs.zip"
+          rm -f "$ZIP"
+          echo "$FOUND" | while IFS= read -r d; do zip -qry "$ZIP" "$d"; done
+          ls -lh "$ZIP" || true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          V="${{ steps.tag.outputs.tag }}"
+
+          {
+            echo "## Hermes iOS — unsigned build \`${V}\`"
+            echo ""
+            echo "Built from \`${GITHUB_SHA}\` on \`macos-26\` with Xcode 26.3."
+            echo ""
+            echo "**These artifacts are unsigned.** Re-sign them with SideStore,"
+            echo "AltStore or Sideloadly using your own Apple ID — no Apple"
+            echo "Developer account is required."
+            echo ""
+            echo "| File | Purpose |"
+            echo "| --- | --- |"
+            echo "| \`${APP_NAME}-${V}-unsigned.ipa\` | Feed to SideStore/AltStore/Sideloadly |"
+            echo "| \`${APP_NAME}-${V}-unsigned-app.zip\` | Raw \`.app\` bundle |"
+            echo "| \`${APP_NAME}-${V}-dSYMs.zip\` | Debug symbols for symbolication |"
+            echo "| \`${APP_NAME}-${V}-unsigned.ipa.sha256\` | Checksum |"
+            echo ""
+            echo "> HealthKit, App Groups and CarPlay entitlements cannot be signed by a"
+            echo "> free personal team. Those features may not work after free re-signing."
+          } > "$RUNNER_TEMP/notes.md"
+
+          ASSETS=(
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa"
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned-app.zip"
+            "$GITHUB_WORKSPACE/${APP_NAME}-${V}-unsigned.ipa.sha256"
+          )
+          [ -f "$GITHUB_WORKSPACE/${APP_NAME}-${V}-dSYMs.zip" ] \
+            && ASSETS+=("$GITHUB_WORKSPACE/${APP_NAME}-${V}-dSYMs.zip")
+
+          gh release create "$V" \
+            --title "Hermes iOS $V (unsigned)" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --target "$GITHUB_SHA" \
+            "${ASSETS[@]}"
+
+          echo "Release published: $V"
